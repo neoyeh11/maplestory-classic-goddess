@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 const path = require('path');
 
 // 用法：npm test（預設測專案根目錄的 HTML，也可用參數指定其他檔案）
-const file = process.argv[2] || path.join(__dirname, '..', 'maplestory-classic-goddess.html');
+const file = process.argv[2] || path.join(__dirname, '..', 'index.html');
 const html = fs.readFileSync(file, 'utf8');
 const KEY = 'goddess-tower:history';
 // saved：開啟前先放進 localStorage 的存檔（模擬重新整理）；brokenStorage：模擬無痕模式等存取會丟例外的情況
