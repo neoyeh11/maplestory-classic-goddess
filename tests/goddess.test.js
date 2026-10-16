@@ -9,13 +9,20 @@ const file = process.argv[2] || path.join(__dirname, '..', 'index.html');
 const html = fs.readFileSync(file, 'utf8');
 const KEY = 'goddess-tower:history';
 // saved：開啟前先放進 localStorage 的存檔（模擬重新整理）；brokenStorage：模擬無痕模式等存取會丟例外的情況
-const open = ({ saved, brokenStorage } = {}) => new JSDOM(html, {
-  url: 'https://goddess.test/', runScripts: 'dangerously',
+// hash：網址的 #；tab：預存的 tab；serverDate：假的伺服器 Date header（null 表示請求失敗）
+const open = ({ saved, brokenStorage, hash = '', tab, serverDate } = {}) => new JSDOM(html, {
+  url: 'https://goddess.test/' + hash, runScripts: 'dangerously',
   beforeParse(w) {
     if (saved !== undefined) w.localStorage.setItem(KEY, saved);
+    if (tab !== undefined) w.localStorage.setItem('goddess-tower:tab', tab);
+    if (serverDate !== undefined) w.fetch = async () => {
+      if (serverDate === null) throw new Error('offline');
+      return { headers: { get: h => (h.toLowerCase() === 'date' ? serverDate : null) } };
+    };
     if (brokenStorage) Object.defineProperty(w, 'localStorage', { get() { throw new Error('SecurityError'); } });
   },
 }).window;
+const settle = () => new Promise(r => setTimeout(r, 20)); // 等頁面的非同步校時完成
 const load = opts => open(opts).document;
 
 const all = [];
@@ -23,10 +30,8 @@ for (let a = 5; a >= 0; a--) for (let b = 5 - a; b >= 0; b--) all.push([a, b, 5 
 const correct = (x, y) => [...x].reduce((n, v, i) => n + (v === y[i]), 0);
 
 let pass = 0, fail = 0;
-const test = (name, fn) => {
-  try { fn(); pass++; console.log('  ✓ ' + name); }
-  catch (e) { fail++; console.log('  ✗ ' + name + '\n    ' + e.message); }
-};
+const tests = [];
+const test = (name, fn) => tests.push([name, fn]);
 
 const $ = (d, id) => d.getElementById(id);
 const click = (d, r) => d.querySelector(`[data-result="${r}"]`).click();
@@ -217,7 +222,112 @@ test('站位有 aria-live', () => {
   assert.strictEqual($(load(), 'guess').getAttribute('aria-live'), 'polite');
 });
 
-const max = Math.max(...Object.values(steps));
-console.log(`\n${pass} passed, ${fail} failed`);
-if (Object.keys(steps).length) console.log(`最多 ${max} 次站位通關（含最後站對那次），平均 ${(Object.values(steps).reduce((a, b) => a + b) / 21).toFixed(2)} 次`);
-process.exit(fail ? 1 : 0);
+const tab = (d, name) => d.getElementById('tab-' + name);
+const panel = (d, name) => d.getElementById('panel-' + name);
+const shown = d => ['seal', 'cd'].filter(n => !panel(d, n).hidden);
+
+test('tab：預設顯示封印之室', () => {
+  const d = load();
+  assert.deepStrictEqual(shown(d), ['seal']);
+  assert.strictEqual(tab(d, 'seal').getAttribute('aria-selected'), 'true');
+  assert.strictEqual(tab(d, 'cd').getAttribute('aria-selected'), 'false');
+  assert.ok(d.querySelector('nav.tabbar [role=tablist], nav.tabbar[role=tablist]'), 'tab 列在底部 nav');
+});
+
+test('tab：點擊切換，記住選擇並更新網址', () => {
+  const w = open(), d = w.document;
+  tab(d, 'cd').click();
+  assert.deepStrictEqual(shown(d), ['cd']);
+  assert.strictEqual(tab(d, 'cd').getAttribute('aria-selected'), 'true');
+  assert.strictEqual(w.location.hash, '#cd');
+  assert.strictEqual(w.localStorage.getItem('goddess-tower:tab'), 'cd');
+  tab(d, 'seal').click();
+  assert.deepStrictEqual(shown(d), ['seal']);
+  assert.strictEqual(w.location.hash, '#seal');
+});
+
+test('tab：網址 #cd 直接開啟，且優先於上次的選擇', () => {
+  assert.deepStrictEqual(shown(load({ hash: '#cd' })), ['cd']);
+  assert.deepStrictEqual(shown(load({ hash: '#cd', tab: 'seal' })), ['cd']);
+  assert.deepStrictEqual(shown(load({ tab: 'cd' })), ['cd']);
+  assert.deepStrictEqual(shown(load({ hash: '#xyz', tab: 'oops' })), ['seal']);
+});
+
+test('tab：localStorage 無法使用時照常切換', () => {
+  const d = load({ brokenStorage: true });
+  tab(d, 'cd').click();
+  assert.deepStrictEqual(shown(d), ['cd']);
+});
+
+test('tab：切換不影響封印之室進度', () => {
+  const d = load();
+  click(d, 1);
+  const g = guess(d);
+  tab(d, 'cd').click(); tab(d, 'seal').click();
+  assert.strictEqual(guess(d), g);
+  assert.strictEqual(d.querySelectorAll('.history-line').length, 1);
+});
+
+// 台灣時間 → Date header（UTC）。例：2026-10-19 是星期一
+const header = (y, mo, d, h, mi) => new Date(Date.UTC(y, mo - 1, d, h - 8, mi)).toUTCString();
+const cd = async when => { const d = load({ serverDate: when }); await settle(); return d; };
+const cdText = (d, id) => $(d, id).textContent;
+
+test('CD：每天下午 1 點換日（換日前仍是前一天的顏色）', async () => {
+  const cases = [
+    // [台灣時間, 今天的顏色, 屬於星期幾, 下一個顏色, 今天/明天]
+    [[2026, 10, 19, 12, 59], '紅色', '星期日', '橘色', '今天'],
+    [[2026, 10, 19, 13, 0], '橘色', '星期一', '黃色', '明天'],
+    [[2026, 10, 20, 0, 30], '橘色', '星期一', '黃色', '今天'],
+    [[2026, 10, 20, 13, 1], '黃色', '星期二', '紫色', '明天'],
+    [[2026, 10, 21, 18, 0], '紫色', '星期三', '深藍色', '明天'],
+    [[2026, 10, 22, 14, 0], '深藍色', '星期四', '淺藍色', '明天'],
+    [[2026, 10, 23, 13, 30], '淺藍色', '星期五', '綠色', '明天'],
+    [[2026, 10, 24, 23, 59], '綠色', '星期六', '紅色', '明天'],
+    [[2026, 10, 25, 13, 0], '紅色', '星期日', '橘色', '明天'],
+  ];
+  for (const [t, color, day, next, when] of cases) {
+    const d = await cd(header(...t));
+    const label = t.join('/');
+    assert.strictEqual(cdText(d, 'cdName'), color, `${label} 顏色`);
+    assert.strictEqual(cdText(d, 'cdDay'), `${day}的唱片`, `${label} 星期`);
+    assert.strictEqual(cdText(d, 'cdNext'), `${when}下午 1:00 換成${next}`, `${label} 下一個`);
+    assert.strictEqual(cdText(d, 'cdSource'), '伺服器時間');
+  }
+});
+
+test('CD：倒數時間', async () => {
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 12, 59)), 'cdLeft'), '還有 0 小時 1 分');
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 13, 0)), 'cdLeft'), '還有 24 小時 0 分');
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 20, 30)), 'cdLeft'), '還有 16 小時 30 分');
+});
+
+test('CD：每週顏色表從星期一排到星期日，標出今天', async () => {
+  const d = await cd(header(2026, 10, 22, 14, 0)); // 星期四
+  const rows = [...d.querySelectorAll('#cdWeek .week-row')].map(r => r.textContent);
+  assert.deepStrictEqual(rows, ['星期一橘色', '星期二黃色', '星期三紫色', '星期四深藍色（今天）', '星期五淺藍色', '星期六綠色', '星期日紅色']);
+  assert.strictEqual(d.querySelectorAll('#cdWeek .today').length, 1);
+});
+
+test('CD：伺服器時間拿不到時改用裝置時間', async () => {
+  for (const serverDate of [null, 'not a date']) {
+    const d = await cd(serverDate);
+    assert.strictEqual(cdText(d, 'cdSource'), '裝置時間');
+    // 與用裝置時間獨立算出的結果一致
+    const now = new Date(Date.now() + 8 * 3600e3 - 13 * 3600e3).getUTCDay();
+    assert.strictEqual(cdText(d, 'cdName'), ['紅色', '橘色', '黃色', '紫色', '深藍色', '淺藍色', '綠色'][now]);
+  }
+  // jsdom 沒有 fetch（等同舊瀏覽器）也要能顯示
+  assert.strictEqual(cdText(load(), 'cdSource'), '裝置時間');
+});
+
+(async () => {
+  for (const [name, fn] of tests) {
+    try { await fn(); pass++; console.log('  ✓ ' + name); }
+    catch (e) { fail++; console.log('  ✗ ' + name + '\n    ' + e.message); }
+  }
+  const max = Math.max(...Object.values(steps));
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (Object.keys(steps).length) console.log(`最多 ${max} 次站位通關（含最後站對那次），平均 ${(Object.values(steps).reduce((a, b) => a + b) / 21).toFixed(2)} 次`);
+  process.exit(fail ? 1 : 0);
+})();
