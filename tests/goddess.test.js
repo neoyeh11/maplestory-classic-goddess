@@ -31,12 +31,14 @@ const test = (name, fn) => {
 const $ = (d, id) => d.getElementById(id);
 const click = (d, r) => d.querySelector(`[data-result="${r}"]`).click();
 const guess = d => $(d, 'guess').textContent;
-const hidden = (d, id) => $(d, id).classList.contains('hidden');
+const btns = d => [...d.querySelectorAll('[data-result]')];
+// 工具已推理出唯一答案：回合標籤會加上「正確答案」
+const solved = d => $(d, 'round').textContent.includes('正確答案');
 
 // 照著畫面玩到底：站對（通關）或工具判定已確定答案為止
 function play(ans) {
   const d = load(), hist = [];
-  while (guess(d) !== ans && !hidden(d, 'ask')) {
+  while (guess(d) !== ans && !solved(d)) {
     const g = guess(d), r = correct(g, ans);
     hist.push([g, r]); click(d, r);
     assert.strictEqual(d.querySelectorAll('.history-line').length, hist.length, `${ans}：回報 ${g}=${r} 沒被記錄`);
@@ -45,7 +47,7 @@ function play(ans) {
   return { d, steps: hist.length + 1, hist };
 }
 // 會被推理到「已確定答案」（而不是直接站中）的答案
-const deduced = () => all.find(a => hidden(play(a).d, 'ask'));
+const deduced = () => all.find(a => solved(play(a).d));
 
 test('初始狀態：500、第 1 次測試、尚未測試', () => {
   const d = load();
@@ -54,8 +56,8 @@ test('初始狀態：500、第 1 次測試、尚未測試', () => {
   assert.strictEqual($(d, 'historyCount').textContent, '尚未測試');
   assert.strictEqual($(d, 'leftPeople').textContent, '●●●●●');
   assert.strictEqual($(d, 'middlePeople').textContent, '—');
-  assert.ok(!hidden(d, 'ask'));
-  assert.ok(hidden(d, 'single'));
+  assert.ok(!solved(d));
+  assert.ok(btns(d).every(b => !b.disabled));
 });
 
 test('已移除的功能不存在', () => {
@@ -84,32 +86,46 @@ test('測試紀錄與回合數隨回報更新', () => {
     assert.ok(lines[i].textContent.includes(g));
     assert.ok(lines[i].textContent.includes(`${r} 個正確`));
   });
-  assert.strictEqual($(d, 'round').textContent, `第 ${hist.length + 1} 次測試`);
+  assert.strictEqual($(d, 'round').textContent, `第 ${hist.length + 1} 次測試` + (solved(d) ? ' · 正確答案' : ''));
   assert.strictEqual($(d, 'historyCount').textContent, `${hist.length} 次紀錄`);
 });
 
-test('確定答案時隱藏回報按鈕並顯示提示', () => {
+test('確定答案時回報按鈕全部停用（不消失），回合標籤加上「正確答案」', () => {
   const ans = deduced();
   assert.ok(ans, '找不到會推理到確定答案的情況');
-  const { d } = play(ans);
-  assert.ok(!hidden(d, 'single'));
+  const { d, hist } = play(ans);
   assert.strictEqual(guess(d), ans);
+  assert.strictEqual($(d, 'round').textContent, `第 ${hist.length + 1} 次測試 · 正確答案`);
+  assert.strictEqual(btns(d).length, 2);
+  assert.ok(btns(d).every(b => b.disabled), '兩顆按鈕都應停用');
+  assert.strictEqual($(d, 'single'), null, '不再有額外的提示區塊');
+  // 重新開始改成主色：靠 body.solved 切換
+  assert.ok(d.body.classList.contains('solved'));
+  // jsdom 不解析 CSS 變數，無法比對實際顏色，改為確認換色規則存在
+  const rule = [...d.styleSheets[0].cssRules].find(r => r.selectorText === '.solved #reset');
+  assert.ok(rule && /background:\s*var\(--accent\)/.test(rule.style.cssText), '缺少 .solved #reset 的換色規則');
+  // 還沒推理出答案時不會出現標籤
+  const d0 = load(); click(d0, 1);
+  assert.ok(!solved(d0));
+  assert.ok(!d0.body.classList.contains('solved'));
 });
 
 const btn = (d, r) => d.querySelector(`[data-result="${r}"]`);
 
-test('不可能出現的回報按鈕停用（不隱藏）且附說明；可能的回報都能按', () => {
+test('不可能出現的回報按鈕停用並半透明（不隱藏、不放說明）；可能的回報都能按', () => {
   let disabledSeen = 0;
   for (const ans of all) {
     const d = load(), hist = [];
-    while (guess(d) !== ans && !hidden(d, 'ask')) {
+    while (guess(d) !== ans && !solved(d)) {
       const g = guess(d);
       // 用工具外的方式重算剩餘可能答案
       const pool = all.filter(a => hist.every(([hg, hr]) => correct(hg, a) === hr));
       for (const r of [0, 1]) {
         const b = btn(d, r), possible = pool.some(a => correct(g, a) === r);
         assert.strictEqual(b.disabled, !possible, `${g} 回報 ${r}：disabled 應為 ${!possible}`);
-        assert.ok(!b.classList.contains('hidden') && b.querySelector('.why'), '按鈕不可隱藏，且要有說明');
+        assert.ok(b.isConnected, '按鈕不可移除');
+        assert.strictEqual(d.defaultView.getComputedStyle(b).opacity === '0.3', !possible, `${g} 回報 ${r}：停用時才半透明`);
+        assert.strictEqual(b.textContent, `${r} 個正確`, '按鈕內不放說明');
         if (!possible) {
           disabledSeen++;
           const before = d.querySelectorAll('.history-line').length;
@@ -125,17 +141,18 @@ test('不可能出現的回報按鈕停用（不隱藏）且附說明；可能�
   assert.ok(disabledSeen > 0, '從沒出現過停用的按鈕，測不到');
   const d = load();
   assert.ok(!btn(d, 0).disabled && !btn(d, 1).disabled, '初始兩顆都可按');
-  assert.ok(btn(d, 0).querySelector('.why').textContent.includes('矛盾'));
+  assert.ok(d.querySelector('.foot').textContent.includes('半透明的按鈕代表 NPC 這次不會這樣說'));
 });
 
 test('重新開始回到初始狀態並清除提示', () => {
   const { d } = play(deduced());
   $(d, 'reset').click();
+  assert.ok(!d.body.classList.contains('solved'));
   assert.strictEqual(guess(d), '500');
   assert.strictEqual($(d, 'historyCount').textContent, '尚未測試');
   assert.strictEqual($(d, 'round').textContent, '第 1 次測試');
-  assert.ok(hidden(d, 'single'));
-  assert.ok(!hidden(d, 'ask'));
+  assert.ok(!solved(d));
+  assert.ok(btns(d).every(b => !b.disabled));
 });
 
 test('進度存進 localStorage，重新開啟後接續', () => {
@@ -149,18 +166,18 @@ test('進度存進 localStorage，重新開啟後接續', () => {
   assert.strictEqual(d2.querySelectorAll('.history-line').length, 2);
   assert.strictEqual($(d2, 'round').textContent, '第 3 次測試');
   // 接續後照樣能解完
-  while (guess(d2) !== '050' && !hidden(d2, 'ask')) click(d2, correct(guess(d2), '050'));
+  while (guess(d2) !== '050' && !solved(d2)) click(d2, correct(guess(d2), '050'));
   assert.strictEqual(guess(d2), '050');
 });
 
 test('已確定答案的進度也能還原', () => {
   const ans = deduced();
   const w = open();
-  while (guess(w.document) !== ans && !hidden(w.document, 'ask')) click(w.document, correct(guess(w.document), ans));
+  while (guess(w.document) !== ans && !solved(w.document)) click(w.document, correct(guess(w.document), ans));
   const d2 = load({ saved: w.localStorage.getItem(KEY) });
   assert.strictEqual(guess(d2), ans);
-  assert.ok(hidden(d2, 'ask'));
-  assert.ok(!hidden(d2, 'single'));
+  assert.ok(solved(d2));
+  assert.ok(btns(d2).every(b => b.disabled));
 });
 
 test('重新開始會清掉存檔', () => {
