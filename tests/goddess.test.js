@@ -160,48 +160,17 @@ test('重新開始回到初始狀態並清除提示', () => {
   assert.ok(btns(d).every(b => !b.disabled));
 });
 
-test('進度存進 localStorage，重新開啟後接續', () => {
+test('不存進度：重新開啟一律從 500 開始，也不寫入 localStorage', () => {
   const w = open(), d = w.document;
-  click(d, correct(guess(d), '050'));
-  click(d, correct(guess(d), '050'));
-  const saved = w.localStorage.getItem(KEY), g = guess(d);
-  assert.strictEqual(JSON.parse(saved).length, 2);
-  const d2 = load({ saved });
-  assert.strictEqual(guess(d2), g);
-  assert.strictEqual(d2.querySelectorAll('.history-line').length, 2);
-  assert.strictEqual($(d2, 'round').textContent, '第 3 次測試');
-  // 接續後照樣能解完
-  while (guess(d2) !== '050' && !solved(d2)) click(d2, correct(guess(d2), '050'));
-  assert.strictEqual(guess(d2), '050');
-});
-
-test('已確定答案的進度也能還原', () => {
-  const ans = deduced();
-  const w = open();
-  while (guess(w.document) !== ans && !solved(w.document)) click(w.document, correct(guess(w.document), ans));
-  const d2 = load({ saved: w.localStorage.getItem(KEY) });
-  assert.strictEqual(guess(d2), ans);
-  assert.ok(solved(d2));
-  assert.ok(btns(d2).every(b => b.disabled));
-});
-
-test('重新開始會清掉存檔', () => {
-  const w = open();
-  click(w.document, 1);
-  $(w.document, 'reset').click();
-  assert.deepStrictEqual(JSON.parse(w.localStorage.getItem(KEY)), []);
-  assert.strictEqual(guess(load({ saved: w.localStorage.getItem(KEY) })), '500');
-});
-
-test('壞掉或互相矛盾的存檔：從頭開始並覆蓋存檔', () => {
-  const bad = ['{not json', '"x"', '[["999",0]]', '[["500",2]]', '[["500",1],["500",0]]', '[null]'];
-  for (const saved of bad) {
-    const w = open({ saved }), d = w.document;
-    assert.strictEqual(guess(d), '500', `存檔 ${saved} 應從 500 開始`);
-    assert.strictEqual($(d, 'historyCount').textContent, '尚未測試', saved);
-    click(d, 0); // 還能正常操作
-    assert.strictEqual(d.querySelectorAll('.history-line').length, 1, saved);
-  }
+  click(d, 1); click(d, 0);
+  assert.strictEqual(w.localStorage.length, 0, '不應寫入 localStorage');
+  tab(d, 'cd').click(); tab(d, 'seal').click();
+  assert.strictEqual(w.localStorage.length, 0, '切換 tab 也不應寫入');
+  // 舊版留下的存檔不會被讀回來
+  const d2 = load({ saved: '[["500",1]]', tab: 'cd' });
+  assert.strictEqual(guess(d2), '500');
+  assert.strictEqual($(d2, 'historyCount').textContent, '尚未測試');
+  assert.deepStrictEqual(shown(d2), ['seal']);
 });
 
 test('localStorage 無法使用時頁面照常運作', () => {
@@ -216,6 +185,14 @@ test('localStorage 無法使用時頁面照常運作', () => {
 test('<title> 與 <h1> 一致', () => {
   const d = load();
   assert.strictEqual(d.title, d.querySelector('h1').textContent);
+});
+
+test('RWD：回報按鈕在任何寬度都同一列', () => {
+  const css = load().querySelector('style').textContent;
+  assert.ok(/\.actions\{[^}]*grid-template-columns:1fr 1fr/.test(css), '預設兩欄');
+  // 任何 media query 都不能把 .actions 改成單欄
+  for (const m of css.matchAll(/@media[^{]*\{((?:[^{}]*\{[^}]*\})*)\}/g))
+    assert.ok(!/\.actions\{[^}]*grid-template-columns:(?!1fr 1fr)/.test(m[1]), '不可在窄螢幕改成單欄：' + m[0].slice(0, 40));
 });
 
 test('站位有 aria-live', () => {
@@ -234,23 +211,45 @@ test('tab：預設顯示封印之室', () => {
   assert.ok(d.querySelector('nav.tabbar [role=tablist], nav.tabbar[role=tablist]'), 'tab 列在底部 nav');
 });
 
-test('tab：點擊切換，記住選擇並更新網址', () => {
+test('tab：點擊切換並更新網址', () => {
   const w = open(), d = w.document;
   tab(d, 'cd').click();
   assert.deepStrictEqual(shown(d), ['cd']);
   assert.strictEqual(tab(d, 'cd').getAttribute('aria-selected'), 'true');
   assert.strictEqual(w.location.hash, '#cd');
-  assert.strictEqual(w.localStorage.getItem('goddess-tower:tab'), 'cd');
   tab(d, 'seal').click();
   assert.deepStrictEqual(shown(d), ['seal']);
   assert.strictEqual(w.location.hash, '#seal');
 });
 
-test('tab：網址 #cd 直接開啟，且優先於上次的選擇', () => {
+test('tab：網址 #cd 直接開啟，無效的 hash 回到封印之室', () => {
   assert.deepStrictEqual(shown(load({ hash: '#cd' })), ['cd']);
-  assert.deepStrictEqual(shown(load({ hash: '#cd', tab: 'seal' })), ['cd']);
-  assert.deepStrictEqual(shown(load({ tab: 'cd' })), ['cd']);
-  assert.deepStrictEqual(shown(load({ hash: '#xyz', tab: 'oops' })), ['seal']);
+  assert.deepStrictEqual(shown(load({ hash: '#seal' })), ['seal']);
+  assert.deepStrictEqual(shown(load({ hash: '#xyz' })), ['seal']);
+});
+
+test('tab：兩行標籤、沒有 emoji；封印之室第二行是目前站位', () => {
+  const d = load();
+  assert.strictEqual(tab(d, 'seal').textContent, '封印之室(5-0-0)');
+  assert.ok(tab(d, 'cd').textContent.startsWith('休息室('));
+  assert.strictEqual(tab(d, 'seal').querySelectorAll('span').length, 2);
+  assert.ok(!/\p{Extended_Pictographic}/u.test(d.querySelector('.tabbar').textContent), 'tab 不放 emoji');
+  click(d, 1);
+  const g = guess(d);
+  assert.strictEqual($(d, 'tabSealSub').textContent, `(${[...g].join('-')})`);
+  $(d, 'reset').click();
+  assert.strictEqual($(d, 'tabSealSub').textContent, '(5-0-0)');
+});
+
+test('版面：說明段落在主內容後面', () => {
+  const d = load();
+  for (const id of ['panel-seal', 'panel-cd']) {
+    const kids = [...$(d, id).children];
+    const intro = kids.findIndex(k => k.classList.contains('intro'));
+    const lastCard = kids.map(k => k.classList.contains('card')).lastIndexOf(true);
+    assert.ok(intro > lastCard, `${id} 的說明應在卡片之後`);
+  }
+  assert.strictEqual(d.querySelector('header p'), null, '標題下方不放說明');
 });
 
 test('tab：localStorage 無法使用時照常切換', () => {
@@ -273,40 +272,45 @@ const header = (y, mo, d, h, mi) => new Date(Date.UTC(y, mo - 1, d, h - 8, mi)).
 const cd = async when => { const d = load({ serverDate: when }); await settle(); return d; };
 const cdText = (d, id) => $(d, id).textContent;
 
-test('CD：每天下午 1 點換日（換日前仍是前一天的顏色）', async () => {
+test('CD：每天台灣時間 24:00 換色', async () => {
   const cases = [
-    // [台灣時間, 今天的顏色, 屬於星期幾, 下一個顏色, 今天/明天]
-    [[2026, 10, 19, 12, 59], '紅色', '星期日', '橘色', '今天'],
-    [[2026, 10, 19, 13, 0], '橘色', '星期一', '黃色', '明天'],
-    [[2026, 10, 20, 0, 30], '橘色', '星期一', '黃色', '今天'],
-    [[2026, 10, 20, 13, 1], '黃色', '星期二', '紫色', '明天'],
-    [[2026, 10, 21, 18, 0], '紫色', '星期三', '深藍色', '明天'],
-    [[2026, 10, 22, 14, 0], '深藍色', '星期四', '淺藍色', '明天'],
-    [[2026, 10, 23, 13, 30], '淺藍色', '星期五', '綠色', '明天'],
-    [[2026, 10, 24, 23, 59], '綠色', '星期六', '紅色', '明天'],
-    [[2026, 10, 25, 13, 0], '紅色', '星期日', '橘色', '明天'],
+    // [台灣時間, 今天的顏色, 星期幾, 下一個顏色]
+    [[2026, 10, 18, 23, 59], '紅色', '星期日', '橘色'],
+    [[2026, 10, 19, 0, 0], '橘色', '星期一', '黃色'],
+    [[2026, 10, 19, 13, 0], '橘色', '星期一', '黃色'],
+    [[2026, 10, 20, 0, 1], '黃色', '星期二', '紫色'],
+    [[2026, 10, 21, 12, 0], '紫色', '星期三', '深藍色'],
+    [[2026, 10, 22, 8, 0], '深藍色', '星期四', '淺藍色'],
+    [[2026, 10, 23, 7, 59], '淺藍色', '星期五', '綠色'], // UTC 仍是前一天（星期四 23:59），要以台灣時間為準
+    [[2026, 10, 24, 23, 59], '綠色', '星期六', '紅色'],
+    [[2026, 10, 25, 0, 0], '紅色', '星期日', '橘色'],
   ];
-  for (const [t, color, day, next, when] of cases) {
+  for (const [t, color, day, next] of cases) {
     const d = await cd(header(...t));
     const label = t.join('/');
     assert.strictEqual(cdText(d, 'cdName'), color, `${label} 顏色`);
     assert.strictEqual(cdText(d, 'cdDay'), `${day}的唱片`, `${label} 星期`);
-    assert.strictEqual(cdText(d, 'cdNext'), `${when}下午 1:00 換成${next}`, `${label} 下一個`);
+    assert.ok(cdText(d, 'cdNext').endsWith(`換成${next}`), `${label} 下一個`);
     assert.strictEqual(cdText(d, 'cdSource'), '伺服器時間');
+    assert.strictEqual(cdText(d, 'tabCdSub'), `(${color})`, `${label} tab`);
   }
 });
 
 test('CD：倒數時間', async () => {
-  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 12, 59)), 'cdLeft'), '還有 0 小時 1 分');
-  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 13, 0)), 'cdLeft'), '還有 24 小時 0 分');
-  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 20, 30)), 'cdLeft'), '還有 16 小時 30 分');
+  // 2026-10-19 是星期一，下一個是星期二的黃色；整點不顯示「0 分」，不滿一小時不顯示「0 小時」
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 23, 59)), 'cdNext'), '還有 1 分換成黃色');
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 23, 15)), 'cdNext'), '還有 45 分換成黃色');
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 0, 0)), 'cdNext'), '還有 24 小時換成黃色');
+  assert.strictEqual(cdText(await cd(header(2026, 10, 19, 7, 30)), 'cdNext'), '還有 16 小時 30 分換成黃色');
+  assert.strictEqual(load().getElementById('cdLeft'), null, '不再有獨立的倒數欄位');
 });
 
 test('CD：每週顏色表從星期一排到星期日，標出今天', async () => {
   const d = await cd(header(2026, 10, 22, 14, 0)); // 星期四
   const rows = [...d.querySelectorAll('#cdWeek .week-row')].map(r => r.textContent);
-  assert.deepStrictEqual(rows, ['星期一橘色', '星期二黃色', '星期三紫色', '星期四深藍色（今天）', '星期五淺藍色', '星期六綠色', '星期日紅色']);
+  assert.deepStrictEqual(rows, ['星期一橘色', '星期二黃色', '星期三紫色', '星期四深藍色', '星期五淺藍色', '星期六綠色', '星期日紅色']);
   assert.strictEqual(d.querySelectorAll('#cdWeek .today').length, 1);
+  assert.strictEqual(d.querySelector('#cdWeek .today').textContent, '星期四深藍色', '今天那列用框線標示，不加文字');
 });
 
 test('CD：伺服器時間拿不到時改用裝置時間', async () => {
@@ -314,7 +318,7 @@ test('CD：伺服器時間拿不到時改用裝置時間', async () => {
     const d = await cd(serverDate);
     assert.strictEqual(cdText(d, 'cdSource'), '裝置時間');
     // 與用裝置時間獨立算出的結果一致
-    const now = new Date(Date.now() + 8 * 3600e3 - 13 * 3600e3).getUTCDay();
+    const now = new Date(Date.now() + 8 * 3600e3).getUTCDay();
     assert.strictEqual(cdText(d, 'cdName'), ['紅色', '橘色', '黃色', '紫色', '深藍色', '淺藍色', '綠色'][now]);
   }
   // jsdom 沒有 fetch（等同舊瀏覽器）也要能顯示
