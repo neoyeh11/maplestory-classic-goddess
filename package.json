@@ -1,0 +1,11 @@
+{
+  "name": "maplestory-classic-goddess",
+  "private": true,
+  "description": "女神之塔平台解題助手",
+  "scripts": {
+    "test": "node tests/goddess.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
